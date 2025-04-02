@@ -6,6 +6,7 @@ import RoverCard from '@/components/RoverCard';
 import FarmVisualization3D from '@/components/FarmVisualization3D';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Alert, AlertTitle, AlertDescription } from '@/components/ui/alert';
+import Architecture from '@/components/Architecture';
 import { 
   getFleetStatus, 
   getSensorData,
@@ -24,6 +25,7 @@ import {
   updateTaskCompletionStatus
 } from '@/utils/fleetCoordinator';
 import { hasEnoughBattery } from '@/utils/batteryManager';
+import { Link } from 'lucide-react';
 
 const Index = () => {
   const [sessionId, setSessionId] = useState<string | null>(null);
@@ -430,6 +432,21 @@ const Index = () => {
                 <div className="flex justify-between items-center">
                   <span>Completed Coordination Tasks:</span>
                   <span className="font-semibold">{coordinationPlan.completedTasks}</span>
+                </div>
+                <div>
+                <a href="/cloud" style={{ 
+                    fontSize: '18px', 
+                    fontWeight: 'bold', 
+                    color: '#ffffff', 
+                    backgroundColor: '#007bff', 
+                    padding: '8px 12px', 
+                    borderRadius: '5px', 
+                    textDecoration: 'none',
+                    display: 'inline-block'
+                  }}>
+                        View in Cloud ☁️
+</a>
+
                 </div>
               </div>
             </div>
