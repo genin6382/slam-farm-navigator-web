@@ -1,6 +1,7 @@
 
 import React, { useEffect, useState } from 'react';
-import { FleetStatus } from '@/types/api';
+import { FleetStatus, FARM_BOUNDARY } from '@/types/api';
+import { getLockedNodes } from '@/utils/slamNavigator';
 
 interface FarmMapProps {
   fleetStatus: FleetStatus | null;
@@ -9,13 +10,23 @@ interface FarmMapProps {
 const FarmMap: React.FC<FarmMapProps> = ({ fleetStatus }) => {
   const [gridSize, setGridSize] = useState({ width: 21, height: 21 });
   const [grid, setGrid] = useState<JSX.Element[]>([]);
+  const [lockedNodes, setLockedNodes] = useState<[number, number][]>([]);
+
+  // Update locked nodes every second
+  useEffect(() => {
+    const intervalId = setInterval(() => {
+      setLockedNodes(getLockedNodes());
+    }, 1000);
+    
+    return () => clearInterval(intervalId);
+  }, []);
 
   // Create grid cells
   useEffect(() => {
     const cells = [];
 
-    for (let y = -10; y <= 10; y++) {
-      for (let x = -10; x <= 10; x++) {
+    for (let y = FARM_BOUNDARY.MIN_Y; y <= FARM_BOUNDARY.MAX_Y; y++) {
+      for (let x = FARM_BOUNDARY.MIN_X; x <= FARM_BOUNDARY.MAX_X; x++) {
         // Determine if cell contains a rover
         let hasRover = false;
         let roverId = '';
@@ -33,6 +44,16 @@ const FarmMap: React.FC<FarmMapProps> = ({ fleetStatus }) => {
             }
           });
         }
+
+        // Check if node is locked/visited
+        const isLocked = lockedNodes.some(([lockX, lockY]) => lockX === x && lockY === y);
+        
+        // Determine border style for boundary edges
+        const isBoundaryEdge = 
+          x === FARM_BOUNDARY.MIN_X || 
+          x === FARM_BOUNDARY.MAX_X || 
+          y === FARM_BOUNDARY.MIN_Y || 
+          y === FARM_BOUNDARY.MAX_Y;
 
         const color = roverId ? `bg-rover-${roverId.split('-')[1]}` : '';
         
@@ -57,7 +78,11 @@ const FarmMap: React.FC<FarmMapProps> = ({ fleetStatus }) => {
 
         const cellKey = `cell-${x}-${y}`;
         cells.push(
-          <div key={cellKey} className="farm-grid-cell">
+          <div 
+            key={cellKey} 
+            className={`farm-grid-cell ${isBoundaryEdge ? 'border-2 border-green-700' : ''} ${isLocked && !hasRover ? 'bg-gray-200' : ''}`}
+            title={`Coordinates: [${x}, ${y}]${isLocked ? ' (Recently visited)' : ''}`}
+          >
             {hasRover && (
               <div 
                 className={`grid-rover ${color} ${status === 'moving' ? 'animate-move' : ''}`}
@@ -72,7 +97,7 @@ const FarmMap: React.FC<FarmMapProps> = ({ fleetStatus }) => {
     }
 
     setGrid(cells);
-  }, [fleetStatus]);
+  }, [fleetStatus, lockedNodes]);
 
   return (
     <div className="bg-white rounded-xl shadow-md p-4">
@@ -118,6 +143,10 @@ const FarmMap: React.FC<FarmMapProps> = ({ fleetStatus }) => {
         <div className="flex items-center">
           <div className="w-3 h-3 bg-task-crop-monitoring rounded-full mr-1"></div>
           <span>Crop Monitoring</span>
+        </div>
+        <div className="flex items-center">
+          <div className="w-3 h-3 bg-gray-200 rounded-full mr-1"></div>
+          <span>Recently Visited</span>
         </div>
       </div>
     </div>

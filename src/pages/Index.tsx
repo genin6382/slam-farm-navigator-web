@@ -13,6 +13,7 @@ import {
 } from '@/api/farmApi';
 import { FleetStatus, RoverSensorData, Direction, Task } from '@/types/api';
 import { toast } from 'sonner';
+import { markNodeAsVisited, getVisitationStats } from '@/utils/slamNavigator';
 
 const Index = () => {
   const [sessionId, setSessionId] = useState<string | null>(null);
@@ -24,6 +25,16 @@ const Index = () => {
     avgMoisture: 0,
     avgpH: 0,
     avgBattery: 0
+  });
+  const [slamStats, setSlamStats] = useState({
+    totalVisitedNodes: 0,
+    currentlyLockedNodes: 0,
+    taskCounts: {
+      "Soil Analysis": 0,
+      "Irrigation": 0,
+      "Weeding": 0,
+      "Crop Monitoring": 0
+    }
   });
   
   // Helper to calculate farm-wide stats from sensor data
@@ -43,6 +54,22 @@ const Index = () => {
       avgBattery: battery
     });
   }, []);
+
+  // Update SLAM stats
+  const updateSlamStats = useCallback(() => {
+    const stats = getVisitationStats();
+    setSlamStats(stats);
+  }, []);
+
+  // Mark visited nodes when rovers' positions change
+  useEffect(() => {
+    if (fleetStatus) {
+      Object.entries(fleetStatus).forEach(([roverId, status]) => {
+        markNodeAsVisited(status.coordinates, status.task as Task | null);
+      });
+      updateSlamStats();
+    }
+  }, [fleetStatus, updateSlamStats]);
 
   // Fetch data on initial load and refresh
   const fetchData = useCallback(async () => {
@@ -86,9 +113,11 @@ const Index = () => {
     
     try {
       await moveRover(sessionId, rover, direction);
-      fetchData(); // Refresh data after movement
+      await fetchData(); // Refresh data after movement
+      toast.success(`${rover} is moving ${direction}`);
     } catch (error) {
       console.error('Error moving rover:', error);
+      toast.error('Failed to move rover');
     }
   };
 
@@ -98,9 +127,11 @@ const Index = () => {
     
     try {
       await resetRover(sessionId, rover);
-      fetchData(); // Refresh data after reset
+      await fetchData(); // Refresh data after reset
+      toast.success(`${rover} has been reset`);
     } catch (error) {
       console.error('Error resetting rover:', error);
+      toast.error('Failed to reset rover');
     }
   };
 
@@ -110,9 +141,11 @@ const Index = () => {
     
     try {
       await assignTask(sessionId, rover, task);
-      fetchData(); // Refresh data after task assignment
+      await fetchData(); // Refresh data after task assignment
+      toast.success(`Assigned ${task} to ${rover}`);
     } catch (error) {
       console.error('Error assigning task:', error);
+      toast.error('Failed to assign task');
     }
   };
 
@@ -120,6 +153,21 @@ const Index = () => {
   if (!sessionId) {
     return <SessionInitializer onSessionStart={setSessionId} />;
   }
+
+  // Calculate current moving rovers count correctly
+  const movingRoversCount = fleetStatus 
+    ? Object.values(fleetStatus).filter(rover => rover.status === 'moving').length 
+    : 0;
+
+  // Calculate rovers with active tasks
+  const activeTasksCount = fleetStatus
+    ? Object.values(fleetStatus).filter(rover => rover.task !== null).length
+    : 0;
+
+  // Calculate rovers needing charge
+  const lowBatteryRoversCount = fleetStatus
+    ? Object.values(fleetStatus).filter(rover => rover.battery < 30).length
+    : 0;
 
   return (
     <div className="min-h-screen p-4 md:p-6 bg-gradient-to-br from-green-50 to-blue-50">
@@ -151,27 +199,47 @@ const Index = () => {
                 </div>
                 <div className="flex justify-between items-center border-b pb-2">
                   <span>Current Tasks:</span>
-                  <span className="font-semibold">
-                    {fleetStatus 
-                      ? Object.values(fleetStatus).filter(rover => rover.task !== null).length 
-                      : 0}
-                  </span>
+                  <span className="font-semibold">{activeTasksCount}</span>
                 </div>
                 <div className="flex justify-between items-center border-b pb-2">
                   <span>Moving Rovers:</span>
-                  <span className="font-semibold">
-                    {fleetStatus 
-                      ? Object.values(fleetStatus).filter(rover => rover.status === 'moving').length 
-                      : 0}
-                  </span>
+                  <span className="font-semibold">{movingRoversCount}</span>
+                </div>
+                <div className="flex justify-between items-center border-b pb-2">
+                  <span>Rovers Needing Charge:</span>
+                  <span className="font-semibold">{lowBatteryRoversCount}</span>
+                </div>
+                <div className="flex justify-between items-center pt-2 border-t border-dashed">
+                  <span className="font-medium">SLAM Navigation Stats:</span>
                 </div>
                 <div className="flex justify-between items-center">
-                  <span>Rovers Needing Charge:</span>
-                  <span className="font-semibold">
-                    {fleetStatus 
-                      ? Object.values(fleetStatus).filter(rover => rover.battery < 30).length 
-                      : 0}
-                  </span>
+                  <span>Visited Areas:</span>
+                  <span className="font-semibold">{slamStats.totalVisitedNodes}</span>
+                </div>
+                <div className="flex justify-between items-center">
+                  <span>Recently Visited (Locked):</span>
+                  <span className="font-semibold">{slamStats.currentlyLockedNodes}</span>
+                </div>
+                <div className="pt-2 text-xs">
+                  <div className="font-medium mb-1">Completed Tasks:</div>
+                  <div className="grid grid-cols-2 gap-x-2 gap-y-1">
+                    <div className="flex justify-between">
+                      <span>Soil Analysis:</span>
+                      <span>{slamStats.taskCounts["Soil Analysis"]}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span>Irrigation:</span>
+                      <span>{slamStats.taskCounts["Irrigation"]}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span>Weeding:</span>
+                      <span>{slamStats.taskCounts["Weeding"]}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span>Crop Monitoring:</span>
+                      <span>{slamStats.taskCounts["Crop Monitoring"]}</span>
+                    </div>
+                  </div>
                 </div>
               </div>
             </div>

@@ -1,13 +1,14 @@
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { ArrowUp, ArrowDown, ArrowLeft, ArrowRight, RotateCcw, Pause, Zap, Thermometer, Droplet, Activity } from 'lucide-react';
+import { ArrowUp, ArrowDown, ArrowLeft, ArrowRight, RotateCcw, Pause, Zap, Thermometer, Droplet, Activity, AlertCircle } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 
-import { RoverStatus, SensorData, Direction, Task } from '@/types/api';
+import { RoverStatus, SensorData, Direction, Task, SOIL_THRESHOLDS } from '@/types/api';
+import { determineBestTask, isWithinBoundary } from '@/utils/slamNavigator';
 
 interface RoverCardProps {
   id: string;
@@ -27,6 +28,8 @@ const RoverCard: React.FC<RoverCardProps> = ({
   onAssignTask
 }) => {
   const [activeTab, setActiveTab] = useState('status');
+  const [recommendedTask, setRecommendedTask] = useState<Task | null>(null);
+  const [soilStatusMessage, setSoilStatusMessage] = useState("");
   const roverNumber = id.split('-')[1];
   const batteryPercentage = roverStatus.battery;
   
@@ -36,6 +39,37 @@ const RoverCard: React.FC<RoverCardProps> = ({
   } else if (batteryPercentage < 70) {
     batteryColor = 'bg-yellow-500';
   }
+
+  // Determine recommended task based on sensor data
+  useEffect(() => {
+    if (sensorData) {
+      const task = determineBestTask(sensorData);
+      setRecommendedTask(task);
+      
+      // Generate soil status message
+      let message = "";
+      
+      if (sensorData.soil_moisture < SOIL_THRESHOLDS.MOISTURE.LOW) {
+        message = "Soil is too dry - needs irrigation";
+      } else if (sensorData.soil_moisture > SOIL_THRESHOLDS.MOISTURE.HIGH) {
+        message = "Soil is waterlogged - avoid irrigation";
+      }
+      
+      if (sensorData.soil_pH < SOIL_THRESHOLDS.PH.LOW) {
+        message += message ? ", pH is acidic" : "pH is acidic";
+      } else if (sensorData.soil_pH > SOIL_THRESHOLDS.PH.HIGH) {
+        message += message ? ", pH is alkaline" : "pH is alkaline";
+      }
+      
+      if (sensorData.temperature < SOIL_THRESHOLDS.TEMPERATURE.LOW) {
+        message += message ? ", cold stress" : "Cold stress condition";
+      } else if (sensorData.temperature > SOIL_THRESHOLDS.TEMPERATURE.HIGH) {
+        message += message ? ", heat stress" : "Heat stress condition";
+      }
+      
+      setSoilStatusMessage(message || "Soil conditions optimal");
+    }
+  }, [sensorData]);
 
   const getStatusBadge = () => {
     switch(roverStatus.status) {
@@ -49,6 +83,32 @@ const RoverCard: React.FC<RoverCardProps> = ({
   };
 
   const handleMove = async (direction: Direction) => {
+    // Calculate new coordinates based on direction
+    const [currentX, currentY] = roverStatus.coordinates;
+    let newX = currentX;
+    let newY = currentY;
+    
+    switch(direction) {
+      case 'forward':
+        newY -= 1;
+        break;
+      case 'backward':
+        newY += 1;
+        break;
+      case 'left':
+        newX -= 1;
+        break;
+      case 'right':
+        newX += 1;
+        break;
+    }
+    
+    // Check if movement is within boundaries
+    if (!isWithinBoundary(newX, newY)) {
+      alert(`Cannot move ${direction}. The rover would exit the farm boundary.`);
+      return;
+    }
+    
     await onMoveRover(id, direction);
   };
 
@@ -58,6 +118,13 @@ const RoverCard: React.FC<RoverCardProps> = ({
 
   const handleTaskAssign = async (task: Task) => {
     await onAssignTask(id, task);
+  };
+
+  // Automatically assign recommended task
+  const handleAutoAssignTask = async () => {
+    if (recommendedTask && roverStatus.status !== 'moving') {
+      await onAssignTask(id, recommendedTask);
+    }
   };
 
   return (
@@ -99,6 +166,26 @@ const RoverCard: React.FC<RoverCardProps> = ({
               <p className="text-sm text-muted-foreground mb-1">Current Task</p>
               <p className="font-medium">{roverStatus.task || 'None'}</p>
             </div>
+            
+            {recommendedTask && roverStatus.task !== recommendedTask && roverStatus.status !== 'moving' && (
+              <div className="mt-2 p-2 bg-amber-50 rounded-md border border-amber-200">
+                <div className="flex items-start gap-2">
+                  <AlertCircle className="h-4 w-4 text-amber-500 mt-0.5" />
+                  <div>
+                    <p className="text-xs text-amber-700">Recommended task: <strong>{recommendedTask}</strong></p>
+                    <p className="text-xs text-amber-600 mt-1">{soilStatusMessage}</p>
+                    <Button 
+                      variant="outline" 
+                      size="sm"
+                      className="mt-2 w-full border-amber-300 text-amber-700 hover:bg-amber-100"
+                      onClick={handleAutoAssignTask}
+                    >
+                      Auto-Assign Task
+                    </Button>
+                  </div>
+                </div>
+              </div>
+            )}
             
             {roverStatus.status === 'moving' && (
               <Button 
@@ -161,6 +248,7 @@ const RoverCard: React.FC<RoverCardProps> = ({
                 <Select 
                   onValueChange={(value) => handleTaskAssign(value as Task)}
                   disabled={roverStatus.status === 'moving'}
+                  defaultValue={roverStatus.task || undefined}
                 >
                   <SelectTrigger>
                     <SelectValue placeholder="Select a task" />
@@ -172,6 +260,12 @@ const RoverCard: React.FC<RoverCardProps> = ({
                     <SelectItem value="Crop Monitoring">Crop Monitoring</SelectItem>
                   </SelectContent>
                 </Select>
+                
+                {recommendedTask && (
+                  <p className="text-xs text-muted-foreground mt-2">
+                    Recommended: <span className="font-medium text-amber-600">{recommendedTask}</span>
+                  </p>
+                )}
               </div>
             </div>
           </TabsContent>
@@ -179,28 +273,55 @@ const RoverCard: React.FC<RoverCardProps> = ({
           <TabsContent value="sensors">
             {sensorData ? (
               <div className="grid grid-cols-2 gap-2">
-                <div className="bg-blue-50 p-3 rounded-lg">
+                <div className={`p-3 rounded-lg ${sensorData.soil_moisture < SOIL_THRESHOLDS.MOISTURE.LOW ? 'bg-red-50' : (sensorData.soil_moisture > SOIL_THRESHOLDS.MOISTURE.HIGH ? 'bg-yellow-50' : 'bg-blue-50')}`}>
                   <div className="flex items-center gap-2 mb-1">
                     <Droplet className="h-4 w-4 text-blue-500" />
                     <span className="text-xs text-muted-foreground">Soil Moisture</span>
                   </div>
                   <p className="sensor-value">{sensorData.soil_moisture.toFixed(1)}%</p>
+                  <div className="mt-1 h-1 bg-gray-200 rounded-full">
+                    <div 
+                      className={`h-1 rounded-full ${sensorData.soil_moisture < SOIL_THRESHOLDS.MOISTURE.LOW ? 'bg-red-500' : (sensorData.soil_moisture > SOIL_THRESHOLDS.MOISTURE.HIGH ? 'bg-yellow-500' : 'bg-blue-500')}`}
+                      style={{ width: `${Math.min(100, sensorData.soil_moisture * 2)}%` }}
+                    ></div>
+                  </div>
+                  <p className="text-xs mt-1">
+                    {sensorData.soil_moisture < SOIL_THRESHOLDS.MOISTURE.LOW ? 'Too dry' : (sensorData.soil_moisture > SOIL_THRESHOLDS.MOISTURE.HIGH ? 'Too wet' : 'Optimal')}
+                  </p>
                 </div>
                 
-                <div className="bg-green-50 p-3 rounded-lg">
+                <div className={`p-3 rounded-lg ${sensorData.soil_pH < SOIL_THRESHOLDS.PH.LOW ? 'bg-orange-50' : (sensorData.soil_pH > SOIL_THRESHOLDS.PH.HIGH ? 'bg-purple-50' : 'bg-green-50')}`}>
                   <div className="flex items-center gap-2 mb-1">
                     <Activity className="h-4 w-4 text-green-500" />
                     <span className="text-xs text-muted-foreground">Soil pH</span>
                   </div>
                   <p className="sensor-value">{sensorData.soil_pH.toFixed(1)}</p>
+                  <div className="mt-1 h-1 bg-gray-200 rounded-full">
+                    <div 
+                      className={`h-1 rounded-full ${sensorData.soil_pH < SOIL_THRESHOLDS.PH.LOW ? 'bg-orange-500' : (sensorData.soil_pH > SOIL_THRESHOLDS.PH.HIGH ? 'bg-purple-500' : 'bg-green-500')}`}
+                      style={{ width: `${(sensorData.soil_pH / 14) * 100}%` }}
+                    ></div>
+                  </div>
+                  <p className="text-xs mt-1">
+                    {sensorData.soil_pH < SOIL_THRESHOLDS.PH.LOW ? 'Acidic' : (sensorData.soil_pH > SOIL_THRESHOLDS.PH.HIGH ? 'Alkaline' : 'Optimal')}
+                  </p>
                 </div>
                 
-                <div className="bg-orange-50 p-3 rounded-lg">
+                <div className={`p-3 rounded-lg ${sensorData.temperature < SOIL_THRESHOLDS.TEMPERATURE.LOW ? 'bg-blue-50' : (sensorData.temperature > SOIL_THRESHOLDS.TEMPERATURE.HIGH ? 'bg-red-50' : 'bg-orange-50')}`}>
                   <div className="flex items-center gap-2 mb-1">
                     <Thermometer className="h-4 w-4 text-orange-500" />
                     <span className="text-xs text-muted-foreground">Temperature</span>
                   </div>
                   <p className="sensor-value">{sensorData.temperature.toFixed(1)}°C</p>
+                  <div className="mt-1 h-1 bg-gray-200 rounded-full">
+                    <div 
+                      className={`h-1 rounded-full ${sensorData.temperature < SOIL_THRESHOLDS.TEMPERATURE.LOW ? 'bg-blue-500' : (sensorData.temperature > SOIL_THRESHOLDS.TEMPERATURE.HIGH ? 'bg-red-500' : 'bg-orange-500')}`}
+                      style={{ width: `${(sensorData.temperature / 50) * 100}%` }}
+                    ></div>
+                  </div>
+                  <p className="text-xs mt-1">
+                    {sensorData.temperature < SOIL_THRESHOLDS.TEMPERATURE.LOW ? 'Cold stress' : (sensorData.temperature > SOIL_THRESHOLDS.TEMPERATURE.HIGH ? 'Heat stress' : 'Optimal')}
+                  </p>
                 </div>
                 
                 <div className="bg-amber-50 p-3 rounded-lg">
@@ -209,6 +330,12 @@ const RoverCard: React.FC<RoverCardProps> = ({
                     <span className="text-xs text-muted-foreground">Battery</span>
                   </div>
                   <p className="sensor-value">{sensorData.battery_level.toFixed(1)}%</p>
+                  <div className="mt-1 h-1 bg-gray-200 rounded-full">
+                    <div 
+                      className={`h-1 rounded-full ${sensorData.battery_level < 30 ? 'bg-red-500' : (sensorData.battery_level < 70 ? 'bg-yellow-500' : 'bg-green-500')}`}
+                      style={{ width: `${sensorData.battery_level}%` }}
+                    ></div>
+                  </div>
                 </div>
                 
                 <div className="col-span-2 text-xs text-gray-500 mt-2">
