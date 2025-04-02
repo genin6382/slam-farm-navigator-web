@@ -4,6 +4,7 @@ import SessionInitializer from '@/components/SessionInitializer';
 import DashboardHeader from '@/components/DashboardHeader';
 import FarmMap from '@/components/FarmMap';
 import RoverCard from '@/components/RoverCard';
+import { Alert, AlertTitle, AlertDescription } from '@/components/ui/alert';
 import { 
   getFleetStatus, 
   getSensorData,
@@ -14,6 +15,13 @@ import {
 import { FleetStatus, RoverSensorData, Direction, Task } from '@/types/api';
 import { toast } from 'sonner';
 import { markNodeAsVisited, getVisitationStats } from '@/utils/slamNavigator';
+import { detectSensorAnomalies } from '@/utils/sensorManager';
+import { 
+  createCoordinationPlan, 
+  assignRoversToTasks, 
+  generateCoordinationTask,
+  updateTaskCompletionStatus
+} from '@/utils/fleetCoordinator';
 
 const Index = () => {
   const [sessionId, setSessionId] = useState<string | null>(null);
@@ -36,6 +44,12 @@ const Index = () => {
       "Crop Monitoring": 0
     }
   });
+  const [sensorFailures, setSensorFailures] = useState<{
+    roverId: string;
+    sensorType: string;
+    severity: string;
+  }[]>([]);
+  const [coordinationPlan, setCoordinationPlan] = useState(createCoordinationPlan());
   
   // Helper to calculate farm-wide stats from sensor data
   const calculateFarmStats = useCallback((sensorData: RoverSensorData) => {
@@ -70,6 +84,80 @@ const Index = () => {
       updateSlamStats();
     }
   }, [fleetStatus, updateSlamStats]);
+
+  // Detect sensor failures
+  useEffect(() => {
+    if (sensorData && Object.keys(sensorData).length > 1) { // Need at least 2 rovers to compare
+      const failures: {
+        roverId: string;
+        sensorType: string;
+        severity: string;
+      }[] = [];
+      
+      // Check each rover's sensors for anomalies
+      Object.entries(sensorData).forEach(([roverId, data]) => {
+        const sensorStatus = detectSensorAnomalies(roverId, data, sensorData);
+        
+        // Check moisture sensor
+        if (!sensorStatus.moisture.isWorking) {
+          failures.push({
+            roverId,
+            sensorType: 'Moisture',
+            severity: sensorStatus.moisture.accuracyLevel < 0.5 ? 'High' : 'Medium'
+          });
+        }
+        
+        // Check pH sensor
+        if (!sensorStatus.ph.isWorking) {
+          failures.push({
+            roverId,
+            sensorType: 'pH',
+            severity: sensorStatus.ph.accuracyLevel < 0.5 ? 'High' : 'Medium'
+          });
+        }
+        
+        // Check temperature sensor
+        if (!sensorStatus.temperature.isWorking) {
+          failures.push({
+            roverId,
+            sensorType: 'Temperature',
+            severity: sensorStatus.temperature.accuracyLevel < 0.5 ? 'High' : 'Medium'
+          });
+        }
+      });
+      
+      setSensorFailures(failures);
+    }
+  }, [sensorData]);
+
+  // Update fleet coordination plan
+  useEffect(() => {
+    if (fleetStatus && sensorData) {
+      // Update existing tasks
+      let updatedPlan = updateTaskCompletionStatus(coordinationPlan);
+      
+      // Generate new tasks if needed (max 5 active tasks)
+      if (updatedPlan.activeTasks < 3) {
+        // Try to create tasks for each type
+        const tasks = ["Soil Analysis", "Irrigation", "Weeding", "Crop Monitoring"] as Task[];
+        
+        for (const taskType of tasks) {
+          const newTask = generateCoordinationTask(sensorData, taskType);
+          if (newTask) {
+            updatedPlan = {
+              ...updatedPlan,
+              tasks: [...updatedPlan.tasks, newTask]
+            };
+          }
+        }
+      }
+      
+      // Assign rovers to tasks
+      updatedPlan = assignRoversToTasks(fleetStatus, updatedPlan);
+      
+      setCoordinationPlan(updatedPlan);
+    }
+  }, [fleetStatus, sensorData, coordinationPlan]);
 
   // Fetch data on initial load and refresh
   const fetchData = useCallback(async () => {
@@ -107,12 +195,23 @@ const Index = () => {
     }
   }, [sessionId, fetchData]);
 
-  // Handle rover movement
+  // Handle rover movement with battery reduction
   const handleMoveRover = async (rover: string, direction: Direction) => {
-    if (!sessionId) return;
+    if (!sessionId || !fleetStatus) return;
     
     try {
       await moveRover(sessionId, rover, direction);
+      
+      // Update local state with reduced battery
+      // Note: The actual battery state will be updated on the next fetch,
+      // but we update locally for immediate UI feedback
+      const updatedFleetStatus = { ...fleetStatus };
+      if (updatedFleetStatus[rover]) {
+        // Reduce battery by movement consumption
+        updatedFleetStatus[rover].battery -= 1; // Using hardcoded value, typically would use BATTERY_CONSUMPTION.MOVE
+        setFleetStatus(updatedFleetStatus);
+      }
+      
       await fetchData(); // Refresh data after movement
       toast.success(`${rover} is moving ${direction}`);
     } catch (error) {
@@ -135,12 +234,30 @@ const Index = () => {
     }
   };
 
-  // Handle task assignment
+  // Handle task assignment with battery reduction
   const handleAssignTask = async (rover: string, task: Task) => {
-    if (!sessionId) return;
+    if (!sessionId || !fleetStatus) return;
     
     try {
       await assignTask(sessionId, rover, task);
+      
+      // Update local state with reduced battery
+      const updatedFleetStatus = { ...fleetStatus };
+      if (updatedFleetStatus[rover]) {
+        // Reduce battery based on task type
+        let batteryReduction;
+        switch(task) {
+          case "Soil Analysis": batteryReduction = 2; break;
+          case "Irrigation": batteryReduction = 3; break;
+          case "Weeding": batteryReduction = 4; break;
+          case "Crop Monitoring": batteryReduction = 1; break;
+          default: batteryReduction = 0;
+        }
+        
+        updatedFleetStatus[rover].battery -= batteryReduction;
+        setFleetStatus(updatedFleetStatus);
+      }
+      
       await fetchData(); // Refresh data after task assignment
       toast.success(`Assigned ${task} to ${rover}`);
     } catch (error) {
@@ -178,6 +295,22 @@ const Index = () => {
           isLoading={isLoading}
           farmStats={farmStats}
         />
+        
+        {sensorFailures.length > 0 && (
+          <Alert variant="destructive" className="mb-6">
+            <AlertTitle>Sensor Failures Detected</AlertTitle>
+            <AlertDescription>
+              <ul className="list-disc pl-5 mt-2">
+                {sensorFailures.map((failure, index) => (
+                  <li key={index} className="mb-1">
+                    {failure.roverId}: {failure.sensorType} sensor has {failure.severity.toLowerCase()} deviation 
+                    from expected values. Using corrected readings from nearby rovers.
+                  </li>
+                ))}
+              </ul>
+            </AlertDescription>
+          </Alert>
+        )}
         
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
           <div className="lg:col-span-2">
@@ -240,6 +373,19 @@ const Index = () => {
                       <span>{slamStats.taskCounts["Crop Monitoring"]}</span>
                     </div>
                   </div>
+                </div>
+                
+                {/* Fleet Coordination Section */}
+                <div className="flex justify-between items-center pt-2 mt-2 border-t border-dashed">
+                  <span className="font-medium">Fleet Coordination:</span>
+                </div>
+                <div className="flex justify-between items-center">
+                  <span>Active Coordination Tasks:</span>
+                  <span className="font-semibold">{coordinationPlan.activeTasks}</span>
+                </div>
+                <div className="flex justify-between items-center">
+                  <span>Completed Coordination Tasks:</span>
+                  <span className="font-semibold">{coordinationPlan.completedTasks}</span>
                 </div>
               </div>
             </div>

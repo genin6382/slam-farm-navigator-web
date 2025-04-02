@@ -93,3 +93,48 @@ export const SOIL_THRESHOLDS = {
 
 // Lock time for visited nodes (in milliseconds)
 export const NODE_LOCK_TIME = 5 * 60 * 1000; // 5 minutes
+
+// Battery consumption constants
+export const BATTERY_CONSUMPTION = {
+  MOVE: 1,      // 1% battery consumed per move
+  TASK: {
+    "Soil Analysis": 2,     // 2% for soil analysis
+    "Irrigation": 3,         // 3% for irrigation
+    "Weeding": 4,            // 4% for weeding
+    "Crop Monitoring": 1     // 1% for crop monitoring
+  }
+};
+
+// Sensor failure handling
+export interface SensorStatus {
+  isWorking: boolean;
+  accuracyLevel: number; // 0-1, where 1 is perfect accuracy
+  lastFailure: number | null; // timestamp of last failure
+}
+
+export interface RoverSensorStatus {
+  moisture: SensorStatus;
+  ph: SensorStatus;
+  temperature: SensorStatus;
+}
+
+export interface FleetSensorStatus {
+  [roverId: string]: RoverSensorStatus;
+}
+
+// Multi-robot coordination
+export interface CoordinationTask {
+  taskType: Task;
+  priority: number; // 1-10, where 10 is highest priority
+  coordinates: [number, number];
+  requiredRovers: number; // How many rovers are needed
+  assignedRovers: string[]; // Which rovers are assigned
+  startTime: number | null;
+  completionTime: number | null;
+}
+
+export interface CoordinationPlan {
+  tasks: CoordinationTask[];
+  activeTasks: number;
+  completedTasks: number;
+}

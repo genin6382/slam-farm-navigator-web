@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -8,7 +7,8 @@ import { ArrowUp, ArrowDown, ArrowLeft, ArrowRight, RotateCcw, Pause, Zap, Therm
 import { Badge } from '@/components/ui/badge';
 
 import { RoverStatus, SensorData, Direction, Task, SOIL_THRESHOLDS } from '@/types/api';
-import { determineBestTask, isWithinBoundary } from '@/utils/slamNavigator';
+import { determineBestTask, isWithinBoundary, findOptimalPath } from '@/utils/slamNavigator';
+import { hasEnoughBattery, calculateMovementBatteryConsumption, calculateTaskBatteryConsumption } from '@/utils/batteryManager';
 
 interface RoverCardProps {
   id: string;
@@ -30,6 +30,7 @@ const RoverCard: React.FC<RoverCardProps> = ({
   const [activeTab, setActiveTab] = useState('status');
   const [recommendedTask, setRecommendedTask] = useState<Task | null>(null);
   const [soilStatusMessage, setSoilStatusMessage] = useState("");
+  const [batteryWarning, setBatteryWarning] = useState("");
   const roverNumber = id.split('-')[1];
   const batteryPercentage = roverStatus.battery;
   
@@ -68,8 +69,17 @@ const RoverCard: React.FC<RoverCardProps> = ({
       }
       
       setSoilStatusMessage(message || "Soil conditions optimal");
+      
+      // Battery warnings
+      if (batteryPercentage < 15) {
+        setBatteryWarning("Critical battery level - return to charging station");
+      } else if (batteryPercentage < 30) {
+        setBatteryWarning("Low battery - limit operations");
+      } else {
+        setBatteryWarning("");
+      }
     }
-  }, [sensorData]);
+  }, [sensorData, batteryPercentage]);
 
   const getStatusBadge = () => {
     switch(roverStatus.status) {
@@ -83,6 +93,12 @@ const RoverCard: React.FC<RoverCardProps> = ({
   };
 
   const handleMove = async (direction: Direction) => {
+    // Check if battery is sufficient for movement
+    if (!hasEnoughBattery(roverStatus.battery, 'move')) {
+      alert(`Cannot move ${direction}. Insufficient battery power.`);
+      return;
+    }
+    
     // Calculate new coordinates based on direction
     const [currentX, currentY] = roverStatus.coordinates;
     let newX = currentX;
@@ -109,6 +125,13 @@ const RoverCard: React.FC<RoverCardProps> = ({
       return;
     }
     
+    // Optional: Check for path planning
+    const path = findOptimalPath(roverStatus.coordinates, [newX, newY], roverStatus.battery);
+    if (!path) {
+      alert(`Cannot plan path to [${newX}, ${newY}]. Insufficient battery or path blocked.`);
+      return;
+    }
+    
     await onMoveRover(id, direction);
   };
 
@@ -117,14 +140,32 @@ const RoverCard: React.FC<RoverCardProps> = ({
   };
 
   const handleTaskAssign = async (task: Task) => {
+    // Check if battery is sufficient for the task
+    if (!hasEnoughBattery(roverStatus.battery, 'task', task)) {
+      alert(`Cannot assign task ${task}. Insufficient battery power.`);
+      return;
+    }
+    
     await onAssignTask(id, task);
   };
 
   // Automatically assign recommended task
   const handleAutoAssignTask = async () => {
     if (recommendedTask && roverStatus.status !== 'moving') {
+      // Check if battery is sufficient for the task
+      if (!hasEnoughBattery(roverStatus.battery, 'task', recommendedTask)) {
+        alert(`Cannot auto-assign task ${recommendedTask}. Insufficient battery power.`);
+        return;
+      }
+      
       await onAssignTask(id, recommendedTask);
     }
+  };
+
+  // Show estimated battery consumption
+  const getEstimatedConsumption = (task: Task): string => {
+    const consumption = calculateTaskBatteryConsumption(task);
+    return `(-${consumption}% battery)`;
   };
 
   return (

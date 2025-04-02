@@ -7,6 +7,7 @@ import {
   SensorData,
   SOIL_THRESHOLDS
 } from '@/types/api';
+import { hasEnoughBattery } from './batteryManager';
 
 // Store visited nodes
 const visitedNodes: Map<string, VisitedNode> = new Map();
@@ -126,4 +127,45 @@ export const getVisitationStats = () => {
     currentlyLockedNodes: lockedNodes,
     taskCounts
   };
+};
+
+// Battery-aware path planning
+export const findOptimalPath = (
+  start: [number, number],
+  destination: [number, number],
+  currentBattery: number
+): [number, number][] | null => {
+  // Check if we have enough battery to make the trip
+  const distanceToDestination = Math.abs(start[0] - destination[0]) + Math.abs(start[1] - destination[1]);
+  
+  // Each move costs BATTERY_CONSUMPTION.MOVE
+  if (!hasEnoughBattery(currentBattery, 'move') || currentBattery < distanceToDestination) {
+    return null; // Not enough battery to reach destination
+  }
+  
+  // Simplified path planning (direct route) for this example
+  // In a real implementation, A* or similar algorithm would be used
+  const path: [number, number][] = [];
+  
+  // Horizontal movement first
+  let currentX = start[0];
+  const destX = destination[0];
+  while (currentX !== destX) {
+    currentX += currentX < destX ? 1 : -1;
+    if (isWithinBoundary(currentX, start[1])) {
+      path.push([currentX, start[1]]);
+    }
+  }
+  
+  // Then vertical movement
+  let currentY = start[1];
+  const destY = destination[1];
+  while (currentY !== destY) {
+    currentY += currentY < destY ? 1 : -1;
+    if (isWithinBoundary(currentX, currentY)) {
+      path.push([currentX, currentY]);
+    }
+  }
+  
+  return path;
 };
