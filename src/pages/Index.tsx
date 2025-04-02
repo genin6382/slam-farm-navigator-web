@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect, useCallback } from 'react';
 import SessionInitializer from '@/components/SessionInitializer';
 import DashboardHeader from '@/components/DashboardHeader';
@@ -12,9 +11,9 @@ import {
   resetRover,
   assignTask
 } from '@/api/farmApi';
-import { FleetStatus, RoverSensorData, Direction, Task } from '@/types/api';
+import { FleetStatus, RoverSensorData, Direction, Task, FARM_BOUNDARY } from '@/types/api';
 import { toast } from 'sonner';
-import { markNodeAsVisited, getVisitationStats } from '@/utils/slamNavigator';
+import { markNodeAsVisited, getVisitationStats, isNodeLocked, isWithinBoundary } from '@/utils/slamNavigator';
 import { detectSensorAnomalies } from '@/utils/sensorManager';
 import { 
   createCoordinationPlan, 
@@ -22,12 +21,14 @@ import {
   generateCoordinationTask,
   updateTaskCompletionStatus
 } from '@/utils/fleetCoordinator';
+import { hasEnoughBattery } from '@/utils/batteryManager';
 
 const Index = () => {
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [fleetStatus, setFleetStatus] = useState<FleetStatus | null>(null);
   const [sensorData, setSensorData] = useState<RoverSensorData | null>(null);
   const [isLoading, setIsLoading] = useState(false);
+  const [autoMovementEnabled, setAutoMovementEnabled] = useState(false);
   const [farmStats, setFarmStats] = useState({
     avgTemp: 0,
     avgMoisture: 0,
@@ -51,7 +52,6 @@ const Index = () => {
   }[]>([]);
   const [coordinationPlan, setCoordinationPlan] = useState(createCoordinationPlan());
   
-  // Helper to calculate farm-wide stats from sensor data
   const calculateFarmStats = useCallback((sensorData: RoverSensorData) => {
     const rovers = Object.values(sensorData);
     if (rovers.length === 0) return;
@@ -69,13 +69,11 @@ const Index = () => {
     });
   }, []);
 
-  // Update SLAM stats
   const updateSlamStats = useCallback(() => {
     const stats = getVisitationStats();
     setSlamStats(stats);
   }, []);
 
-  // Mark visited nodes when rovers' positions change
   useEffect(() => {
     if (fleetStatus) {
       Object.entries(fleetStatus).forEach(([roverId, status]) => {
@@ -85,20 +83,17 @@ const Index = () => {
     }
   }, [fleetStatus, updateSlamStats]);
 
-  // Detect sensor failures
   useEffect(() => {
-    if (sensorData && Object.keys(sensorData).length > 1) { // Need at least 2 rovers to compare
+    if (sensorData && Object.keys(sensorData).length > 1) {
       const failures: {
         roverId: string;
         sensorType: string;
         severity: string;
       }[] = [];
       
-      // Check each rover's sensors for anomalies
       Object.entries(sensorData).forEach(([roverId, data]) => {
         const sensorStatus = detectSensorAnomalies(roverId, data, sensorData);
         
-        // Check moisture sensor
         if (!sensorStatus.moisture.isWorking) {
           failures.push({
             roverId,
@@ -107,7 +102,6 @@ const Index = () => {
           });
         }
         
-        // Check pH sensor
         if (!sensorStatus.ph.isWorking) {
           failures.push({
             roverId,
@@ -116,7 +110,6 @@ const Index = () => {
           });
         }
         
-        // Check temperature sensor
         if (!sensorStatus.temperature.isWorking) {
           failures.push({
             roverId,
@@ -130,15 +123,11 @@ const Index = () => {
     }
   }, [sensorData]);
 
-  // Update fleet coordination plan
   useEffect(() => {
     if (fleetStatus && sensorData) {
-      // Update existing tasks
       let updatedPlan = updateTaskCompletionStatus(coordinationPlan);
       
-      // Generate new tasks if needed (max 5 active tasks)
       if (updatedPlan.activeTasks < 3) {
-        // Try to create tasks for each type
         const tasks = ["Soil Analysis", "Irrigation", "Weeding", "Crop Monitoring"] as Task[];
         
         for (const taskType of tasks) {
@@ -152,14 +141,12 @@ const Index = () => {
         }
       }
       
-      // Assign rovers to tasks
       updatedPlan = assignRoversToTasks(fleetStatus, updatedPlan);
       
       setCoordinationPlan(updatedPlan);
     }
   }, [fleetStatus, sensorData, coordinationPlan]);
 
-  // Fetch data on initial load and refresh
   const fetchData = useCallback(async () => {
     if (!sessionId) return;
     
@@ -181,38 +168,75 @@ const Index = () => {
     }
   }, [sessionId, calculateFarmStats]);
 
-  // Load data when session starts or on manual refresh
   useEffect(() => {
     if (sessionId) {
       fetchData();
       
-      // Set up polling for regular updates
       const intervalId = setInterval(() => {
         fetchData();
-      }, 10000); // Refresh every 10 seconds
+      }, 10000);
       
       return () => clearInterval(intervalId);
     }
   }, [sessionId, fetchData]);
 
-  // Handle rover movement with battery reduction
+  useEffect(() => {
+    if (!sessionId || !fleetStatus || !autoMovementEnabled) return;
+    
+    const moveInterval = setInterval(async () => {
+      if (isLoading) return;
+      
+      for (const [roverId, status] of Object.entries(fleetStatus)) {
+        if (status.status === 'moving' || status.battery < 30) continue;
+        
+        const [currentX, currentY] = status.coordinates;
+        
+        const possibleDirections: Direction[] = [];
+        
+        const directions: { direction: Direction, coords: [number, number] }[] = [
+          { direction: 'forward', coords: [currentX, currentY - 1] },
+          { direction: 'backward', coords: [currentX, currentY + 1] },
+          { direction: 'left', coords: [currentX - 1, currentY] },
+          { direction: 'right', coords: [currentX + 1, currentY] }
+        ];
+        
+        for (const { direction, coords } of directions) {
+          const [newX, newY] = coords;
+          
+          if (isWithinBoundary(newX, newY) && !isNodeLocked(coords) && hasEnoughBattery(status.battery, 'move')) {
+            possibleDirections.push(direction);
+          }
+        }
+        
+        if (possibleDirections.length > 0) {
+          const randomDirection = possibleDirections[Math.floor(Math.random() * possibleDirections.length)];
+          try {
+            await handleMoveRover(roverId, randomDirection);
+            console.log(`Auto-moving ${roverId} ${randomDirection}`);
+            break;
+          } catch (error) {
+            console.error(`Error auto-moving ${roverId}:`, error);
+          }
+        }
+      }
+    }, 5000);
+    
+    return () => clearInterval(moveInterval);
+  }, [sessionId, fleetStatus, autoMovementEnabled, isLoading]);
+
   const handleMoveRover = async (rover: string, direction: Direction) => {
     if (!sessionId || !fleetStatus) return;
     
     try {
       await moveRover(sessionId, rover, direction);
       
-      // Update local state with reduced battery
-      // Note: The actual battery state will be updated on the next fetch,
-      // but we update locally for immediate UI feedback
       const updatedFleetStatus = { ...fleetStatus };
       if (updatedFleetStatus[rover]) {
-        // Reduce battery by movement consumption
-        updatedFleetStatus[rover].battery -= 1; // Using hardcoded value, typically would use BATTERY_CONSUMPTION.MOVE
+        updatedFleetStatus[rover].battery -= 1;
         setFleetStatus(updatedFleetStatus);
       }
       
-      await fetchData(); // Refresh data after movement
+      await fetchData();
       toast.success(`${rover} is moving ${direction}`);
     } catch (error) {
       console.error('Error moving rover:', error);
@@ -220,13 +244,12 @@ const Index = () => {
     }
   };
 
-  // Handle rover reset
   const handleResetRover = async (rover: string) => {
     if (!sessionId) return;
     
     try {
       await resetRover(sessionId, rover);
-      await fetchData(); // Refresh data after reset
+      await fetchData();
       toast.success(`${rover} has been reset`);
     } catch (error) {
       console.error('Error resetting rover:', error);
@@ -234,17 +257,14 @@ const Index = () => {
     }
   };
 
-  // Handle task assignment with battery reduction
   const handleAssignTask = async (rover: string, task: Task) => {
     if (!sessionId || !fleetStatus) return;
     
     try {
       await assignTask(sessionId, rover, task);
       
-      // Update local state with reduced battery
       const updatedFleetStatus = { ...fleetStatus };
       if (updatedFleetStatus[rover]) {
-        // Reduce battery based on task type
         let batteryReduction;
         switch(task) {
           case "Soil Analysis": batteryReduction = 2; break;
@@ -258,7 +278,7 @@ const Index = () => {
         setFleetStatus(updatedFleetStatus);
       }
       
-      await fetchData(); // Refresh data after task assignment
+      await fetchData();
       toast.success(`Assigned ${task} to ${rover}`);
     } catch (error) {
       console.error('Error assigning task:', error);
@@ -266,22 +286,18 @@ const Index = () => {
     }
   };
 
-  // If no session, show initializer
   if (!sessionId) {
     return <SessionInitializer onSessionStart={setSessionId} />;
   }
 
-  // Calculate current moving rovers count correctly
   const movingRoversCount = fleetStatus 
     ? Object.values(fleetStatus).filter(rover => rover.status === 'moving').length 
     : 0;
 
-  // Calculate rovers with active tasks
   const activeTasksCount = fleetStatus
     ? Object.values(fleetStatus).filter(rover => rover.task !== null).length
     : 0;
 
-  // Calculate rovers needing charge
   const lowBatteryRoversCount = fleetStatus
     ? Object.values(fleetStatus).filter(rover => rover.battery < 30).length
     : 0;
@@ -342,9 +358,23 @@ const Index = () => {
                   <span>Rovers Needing Charge:</span>
                   <span className="font-semibold">{lowBatteryRoversCount}</span>
                 </div>
+                
+                <div className="flex justify-between items-center border-b pb-2">
+                  <span>Auto Movement:</span>
+                  <button 
+                    onClick={() => setAutoMovementEnabled(!autoMovementEnabled)}
+                    className={`px-3 py-1 rounded text-xs ${autoMovementEnabled 
+                      ? 'bg-green-500 text-white' 
+                      : 'bg-gray-200 text-gray-700'}`}
+                  >
+                    {autoMovementEnabled ? 'Enabled' : 'Disabled'}
+                  </button>
+                </div>
+                
                 <div className="flex justify-between items-center pt-2 border-t border-dashed">
                   <span className="font-medium">SLAM Navigation Stats:</span>
                 </div>
+                
                 <div className="flex justify-between items-center">
                   <span>Visited Areas:</span>
                   <span className="font-semibold">{slamStats.totalVisitedNodes}</span>
@@ -375,7 +405,6 @@ const Index = () => {
                   </div>
                 </div>
                 
-                {/* Fleet Coordination Section */}
                 <div className="flex justify-between items-center pt-2 mt-2 border-t border-dashed">
                   <span className="font-medium">Fleet Coordination:</span>
                 </div>

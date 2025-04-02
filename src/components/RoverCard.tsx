@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -33,6 +34,24 @@ const RoverCard: React.FC<RoverCardProps> = ({
   const [batteryWarning, setBatteryWarning] = useState("");
   const roverNumber = id.split('-')[1];
   const batteryPercentage = roverStatus.battery;
+  
+  // Determine card border color based on assigned task
+  const getTaskBorderColor = () => {
+    if (!roverStatus.task) return `border-rover-${roverNumber}`;
+    
+    switch(roverStatus.task) {
+      case 'Soil Analysis':
+        return 'border-task-soil-analysis';
+      case 'Irrigation':
+        return 'border-task-irrigation';
+      case 'Weeding':
+        return 'border-task-weeding';
+      case 'Crop Monitoring':
+        return 'border-task-crop-monitoring';
+      default:
+        return `border-rover-${roverNumber}`;
+    }
+  };
   
   let batteryColor = 'bg-green-500';
   if (batteryPercentage < 30) {
@@ -169,7 +188,7 @@ const RoverCard: React.FC<RoverCardProps> = ({
   };
 
   return (
-    <Card className={`hover:shadow-lg transition-all duration-300 rover-item border-l-4 border-rover-${roverNumber}`}>
+    <Card className={`hover:shadow-lg transition-all duration-300 rover-item border-l-4 ${getTaskBorderColor()}`}>
       <CardHeader className="pb-2">
         <div className="flex justify-between items-center">
           <CardTitle className="text-lg font-bold">

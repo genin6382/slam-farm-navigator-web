@@ -1,11 +1,11 @@
-
 import { 
   VisitedNode, 
   FARM_BOUNDARY, 
   NODE_LOCK_TIME,
   Task,
   SensorData,
-  SOIL_THRESHOLDS
+  SOIL_THRESHOLDS,
+  Direction
 } from '@/types/api';
 import { hasEnoughBattery } from './batteryManager';
 
@@ -60,6 +60,59 @@ export const isNodeLocked = (coordinates: [number, number]): boolean => {
   const node = visitedNodes.get(key)!;
   const now = Date.now();
   return (now - node.lastVisited) < NODE_LOCK_TIME;
+};
+
+// Find the next best direction for a rover to move
+export const findNextBestDirection = (
+  currentCoordinates: [number, number],
+  currentBattery: number
+): Direction | null => {
+  const [x, y] = currentCoordinates;
+  
+  // Check all four directions
+  const directions: Array<{direction: Direction, coordinates: [number, number]}> = [
+    { direction: 'forward', coordinates: [x, y - 1] },
+    { direction: 'backward', coordinates: [x, y + 1] },
+    { direction: 'left', coordinates: [x - 1, y] },
+    { direction: 'right', coordinates: [x + 1, y] }
+  ];
+  
+  // Filter directions that are within boundary, not locked, and have enough battery
+  const validDirections = directions.filter(({ coordinates }) => {
+    return isWithinBoundary(coordinates[0], coordinates[1]) && 
+           !isNodeLocked(coordinates) &&
+           hasEnoughBattery(currentBattery, 'move');
+  });
+  
+  if (validDirections.length === 0) return null;
+  
+  // Prioritize unvisited nodes
+  const unvisitedDirections = validDirections.filter(({ coordinates }) => {
+    const key = getNodeKey(coordinates[0], coordinates[1]);
+    return !visitedNodes.has(key);
+  });
+  
+  // If there are unvisited directions, choose one randomly
+  if (unvisitedDirections.length > 0) {
+    const randomIndex = Math.floor(Math.random() * unvisitedDirections.length);
+    return unvisitedDirections[randomIndex].direction;
+  }
+  
+  // Otherwise, choose a direction with the oldest visit time
+  let oldestDirection = validDirections[0];
+  let oldestTime = Number.MAX_SAFE_INTEGER;
+  
+  validDirections.forEach(({ direction, coordinates }) => {
+    const key = getNodeKey(coordinates[0], coordinates[1]);
+    const node = visitedNodes.get(key);
+    
+    if (node && node.lastVisited < oldestTime) {
+      oldestTime = node.lastVisited;
+      oldestDirection = { direction, coordinates };
+    }
+  });
+  
+  return oldestDirection.direction;
 };
 
 // Determine best task based on sensor data
