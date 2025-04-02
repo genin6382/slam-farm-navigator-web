@@ -1,3 +1,4 @@
+
 import { 
   VisitedNode, 
   FARM_BOUNDARY, 
@@ -62,57 +63,87 @@ export const isNodeLocked = (coordinates: [number, number]): boolean => {
   return (now - node.lastVisited) < NODE_LOCK_TIME;
 };
 
+// Get the distance between two coordinates
+export const getDistance = (
+  coord1: [number, number],
+  coord2: [number, number]
+): number => {
+  return Math.sqrt(
+    Math.pow(coord1[0] - coord2[0], 2) + 
+    Math.pow(coord1[1] - coord2[1], 2)
+  );
+};
+
 // Find the next best direction for a rover to move
 export const findNextBestDirection = (
   currentCoordinates: [number, number],
-  currentBattery: number
+  currentBattery: number,
+  avoidRovers: [number, number][] = []
 ): Direction | null => {
   const [x, y] = currentCoordinates;
   
   // Check all four directions
-  const directions: Array<{direction: Direction, coordinates: [number, number]}> = [
-    { direction: 'forward', coordinates: [x, y - 1] },
-    { direction: 'backward', coordinates: [x, y + 1] },
-    { direction: 'left', coordinates: [x - 1, y] },
-    { direction: 'right', coordinates: [x + 1, y] }
+  const directions: Array<{direction: Direction, coordinates: [number, number], score: number}> = [
+    { direction: 'forward', coordinates: [x, y - 1], score: 0 },
+    { direction: 'backward', coordinates: [x, y + 1], score: 0 },
+    { direction: 'left', coordinates: [x - 1, y], score: 0 },
+    { direction: 'right', coordinates: [x + 1, y], score: 0 }
   ];
   
   // Filter directions that are within boundary, not locked, and have enough battery
   const validDirections = directions.filter(({ coordinates }) => {
-    return isWithinBoundary(coordinates[0], coordinates[1]) && 
-           !isNodeLocked(coordinates) &&
-           hasEnoughBattery(currentBattery, 'move');
+    // Check if coordinates are within boundary
+    const validBoundary = isWithinBoundary(coordinates[0], coordinates[1]);
+    
+    // Check if coordinates are not locked
+    const notLocked = !isNodeLocked(coordinates);
+    
+    // Check if there's enough battery
+    const sufficientBattery = hasEnoughBattery(currentBattery, 'move');
+    
+    // Check if coordinates don't collide with other rovers
+    const noCollision = !avoidRovers.some(roverCoord => 
+      roverCoord[0] === coordinates[0] && 
+      roverCoord[1] === coordinates[1]
+    );
+    
+    return validBoundary && notLocked && sufficientBattery && noCollision;
   });
   
   if (validDirections.length === 0) return null;
   
-  // Prioritize unvisited nodes
-  const unvisitedDirections = validDirections.filter(({ coordinates }) => {
-    const key = getNodeKey(coordinates[0], coordinates[1]);
-    return !visitedNodes.has(key);
-  });
-  
-  // If there are unvisited directions, choose one randomly
-  if (unvisitedDirections.length > 0) {
-    const randomIndex = Math.floor(Math.random() * unvisitedDirections.length);
-    return unvisitedDirections[randomIndex].direction;
-  }
-  
-  // Otherwise, choose a direction with the oldest visit time
-  let oldestDirection = validDirections[0];
-  let oldestTime = Number.MAX_SAFE_INTEGER;
-  
-  validDirections.forEach(({ direction, coordinates }) => {
-    const key = getNodeKey(coordinates[0], coordinates[1]);
-    const node = visitedNodes.get(key);
+  // Score the valid directions based on various factors
+  validDirections.forEach(direction => {
+    const [dx, dy] = direction.coordinates;
     
-    if (node && node.lastVisited < oldestTime) {
-      oldestTime = node.lastVisited;
-      oldestDirection = { direction, coordinates };
+    // Factor 1: Prefer unvisited nodes (highest priority)
+    const key = getNodeKey(dx, dy);
+    if (!visitedNodes.has(key)) {
+      direction.score += 100;
+    } else {
+      // Factor 2: For visited nodes, prefer those visited longer ago
+      const visitedTime = visitedNodes.get(key)!.lastVisited;
+      const timeSinceVisit = Date.now() - visitedTime;
+      direction.score += Math.min(80, timeSinceVisit / (NODE_LOCK_TIME / 80)); // Max score 80
     }
+    
+    // Factor 3: Avoid edges of the map where possible (unless exploring)
+    const distanceFromEdge = Math.min(
+      Math.abs(dx - FARM_BOUNDARY.MIN_X),
+      Math.abs(dx - FARM_BOUNDARY.MAX_X),
+      Math.abs(dy - FARM_BOUNDARY.MIN_Y),
+      Math.abs(dy - FARM_BOUNDARY.MAX_Y)
+    );
+    
+    direction.score += distanceFromEdge * 2; // Each step from edge adds 2 to score
+    
+    // Factor 4: Slightly randomize to avoid predictable patterns
+    direction.score += Math.random() * 10; // Random bonus between 0-10
   });
   
-  return oldestDirection.direction;
+  // Sort by score (descending) and take the highest scoring direction
+  validDirections.sort((a, b) => b.score - a.score);
+  return validDirections[0].direction;
 };
 
 // Determine best task based on sensor data
@@ -182,43 +213,137 @@ export const getVisitationStats = () => {
   };
 };
 
+// Get all visited nodes (for visualization)
+export const getAllVisitedNodes = (): {coordinates: [number, number], lastVisited: number}[] => {
+  return Array.from(visitedNodes.values()).map(node => ({
+    coordinates: node.coordinates,
+    lastVisited: node.lastVisited
+  }));
+};
+
 // Battery-aware path planning
 export const findOptimalPath = (
   start: [number, number],
   destination: [number, number],
-  currentBattery: number
+  currentBattery: number,
+  avoidNodes: [number, number][] = []
 ): [number, number][] | null => {
+  // Enhanced A* pathfinding algorithm
+  
+  // Check if destination is within boundary
+  if (!isWithinBoundary(destination[0], destination[1])) {
+    return null;
+  }
+  
   // Check if we have enough battery to make the trip
   const distanceToDestination = Math.abs(start[0] - destination[0]) + Math.abs(start[1] - destination[1]);
   
-  // Each move costs BATTERY_CONSUMPTION.MOVE
+  // Each move costs battery, so we need enough for the distance
   if (!hasEnoughBattery(currentBattery, 'move') || currentBattery < distanceToDestination) {
     return null; // Not enough battery to reach destination
   }
   
-  // Simplified path planning (direct route) for this example
-  // In a real implementation, A* or similar algorithm would be used
-  const path: [number, number][] = [];
+  // Create a set of nodes to avoid (includes locked nodes and other rovers)
+  const nodesToAvoid = new Set<string>();
+  avoidNodes.forEach(coord => {
+    nodesToAvoid.add(getNodeKey(coord[0], coord[1]));
+  });
   
-  // Horizontal movement first
-  let currentX = start[0];
-  const destX = destination[0];
-  while (currentX !== destX) {
-    currentX += currentX < destX ? 1 : -1;
-    if (isWithinBoundary(currentX, start[1])) {
-      path.push([currentX, start[1]]);
+  // We'll use A* algorithm to find the optimal path
+  type AStarNode = {
+    coord: [number, number];
+    g: number; // Cost from start to current node
+    h: number; // Heuristic (estimated cost from current to goal)
+    f: number; // Total cost (g + h)
+    parent: AStarNode | null;
+  };
+  
+  const openSet: AStarNode[] = [];
+  const closedSet = new Set<string>();
+  
+  // Add starting node to open set
+  openSet.push({
+    coord: start,
+    g: 0,
+    h: getDistance(start, destination),
+    f: getDistance(start, destination),
+    parent: null
+  });
+  
+  while (openSet.length > 0) {
+    // Find node with lowest f cost
+    openSet.sort((a, b) => a.f - b.f);
+    const current = openSet.shift()!;
+    
+    // We've reached the destination
+    if (current.coord[0] === destination[0] && current.coord[1] === destination[1]) {
+      // Reconstruct path
+      const path: [number, number][] = [];
+      let currentNode: AStarNode | null = current;
+      
+      while (currentNode) {
+        path.unshift(currentNode.coord);
+        currentNode = currentNode.parent;
+      }
+      
+      // Remove start node from path
+      path.shift();
+      
+      return path;
+    }
+    
+    // Add current to closed set
+    closedSet.add(getNodeKey(current.coord[0], current.coord[1]));
+    
+    // Check neighbors
+    const directions = [
+      [0, -1], [0, 1], [-1, 0], [1, 0] // Up, down, left, right
+    ];
+    
+    for (const [dx, dy] of directions) {
+      const neighborCoord: [number, number] = [current.coord[0] + dx, current.coord[1] + dy];
+      const neighborKey = getNodeKey(neighborCoord[0], neighborCoord[1]);
+      
+      // Skip if out of bounds, in closed set, or in avoid set
+      if (
+        !isWithinBoundary(neighborCoord[0], neighborCoord[1]) ||
+        closedSet.has(neighborKey) ||
+        nodesToAvoid.has(neighborKey)
+      ) {
+        continue;
+      }
+      
+      // Calculate costs
+      const gCost = current.g + 1; // Each move costs 1
+      const hCost = getDistance(neighborCoord, destination);
+      const fCost = gCost + hCost;
+      
+      // Check if neighbor is already in open set with a better path
+      const existingNeighbor = openSet.find(
+        node => node.coord[0] === neighborCoord[0] && node.coord[1] === neighborCoord[1]
+      );
+      
+      if (existingNeighbor && existingNeighbor.g <= gCost) {
+        continue; // Skip if existing path is better or equal
+      }
+      
+      // Add or update neighbor in open set
+      if (existingNeighbor) {
+        existingNeighbor.g = gCost;
+        existingNeighbor.f = fCost;
+        existingNeighbor.parent = current;
+      } else {
+        openSet.push({
+          coord: neighborCoord,
+          g: gCost,
+          h: hCost,
+          f: fCost,
+          parent: current
+        });
+      }
     }
   }
   
-  // Then vertical movement
-  let currentY = start[1];
-  const destY = destination[1];
-  while (currentY !== destY) {
-    currentY += currentY < destY ? 1 : -1;
-    if (isWithinBoundary(currentX, currentY)) {
-      path.push([currentX, currentY]);
-    }
-  }
-  
-  return path;
+  // No path found
+  return null;
 };

@@ -3,6 +3,8 @@ import SessionInitializer from '@/components/SessionInitializer';
 import DashboardHeader from '@/components/DashboardHeader';
 import FarmMap from '@/components/FarmMap';
 import RoverCard from '@/components/RoverCard';
+import FarmVisualization3D from '@/components/FarmVisualization3D';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Alert, AlertTitle, AlertDescription } from '@/components/ui/alert';
 import { 
   getFleetStatus, 
@@ -330,7 +332,20 @@ const Index = () => {
         
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
           <div className="lg:col-span-2">
-            <FarmMap fleetStatus={fleetStatus} />
+            <Tabs defaultValue="2d-map" className="w-full">
+              <TabsList className="grid w-full grid-cols-2 mb-4">
+                <TabsTrigger value="2d-map">2D Map View</TabsTrigger>
+                <TabsTrigger value="3d-map">3D Visualization</TabsTrigger>
+              </TabsList>
+              
+              <TabsContent value="2d-map" className="mt-0">
+                <FarmMap fleetStatus={fleetStatus} />
+              </TabsContent>
+              
+              <TabsContent value="3d-map" className="mt-0">
+                <FarmVisualization3D fleetStatus={fleetStatus} sensorData={sensorData} />
+              </TabsContent>
+            </Tabs>
           </div>
           
           <div>
